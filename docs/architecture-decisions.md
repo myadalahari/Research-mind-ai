@@ -1248,6 +1248,114 @@ existing summary) both degrading gracefully without losing state or raising.
 
 ---
 
-*(This log will continue to grow as Phases 5–12 are implemented — RAG pipeline,
-multi-agent graph, memory, report generation, frontend, Docker, testing, and the final
-README will each surface their own decisions.)*
+## ADR-032: Black/Ruff/mypy configured to this codebase's actual conventions, not each tool's defaults; git repository initialized at the Phase 8 checkpoint
+
+**Decision:** Before starting Phase 9, added `pyproject.toml` configuring Black
+(`line-length = 120`), Ruff (a conservative `select = ["E", "F", "B", "W"]` rule
+set, with `B008` ignored project-wide), and mypy (not `--strict`; targeted
+per-module `disable_error_code` overrides for third-party stub friction), plus a
+separate `requirements-dev.txt` pinning the exact tool versions installed
+(`black==26.5.1`, `ruff==0.16.1`, `mypy==2.3.0`). Applied Black across the whole
+tree and fixed every genuine Ruff/mypy finding. Also initialized this project's
+git repository for the first time at this checkpoint (`git init`, one commit
+covering Phases 1–8, tagged `phase-8-complete`) — the project had no version
+control at all before this point; every prior phase's "approval" was this
+conversation's own review process, not a commit history.
+
+**Why line-length=120, not Black's default 88:** Measuring the existing codebase
+first (326 lines already over 100 columns, 41 over 120, out of Phases 1–8's ~80
+files) showed that adopting Black's default would force a disruptive full-tree
+reformat driven by the tool's own opinion rather than this codebase's actual,
+already-reviewed style (prose-heavy docstrings and descriptive names routinely
+run past 88/100 columns by design — see this log's own stated goal of every
+entry standing on its own as interview-ready explanation, which favors readable
+prose over artificially wrapped lines). 120 accommodates the existing style
+without needing to relax it further.
+
+**Why a conservative Ruff rule set, not Ruff's full opinionated defaults:**
+`select = ["E", "F", "B", "W"]` catches real-bug-shaped issues (unused imports/
+names, undefined names, common bugbear patterns like mutable `ContextVar`
+defaults or `zip()` without `strict=`) without also surfacing import-sorting,
+docstring-convention, or cyclomatic-complexity findings across already-reviewed
+code that would be pure churn with no correctness value. `B008` ("no function
+call in argument defaults") is ignored project-wide because it's a real
+anti-pattern in general but a false positive against FastAPI's own documented,
+idiomatic `Depends(...)`-in-signature-default dependency-injection mechanism,
+used throughout `app/api/routes/*`.
+
+**Why mypy is not `--strict`:** This codebase's primary correctness signal
+throughout Phases 1–8 was real functional testing (real DB, real files, real
+HTTP requests, no mocks of the code under test) per file, not a mypy-strict
+discipline from the start. Enabling `--strict` now would surface a large,
+one-time backlog of pre-existing annotation gaps unrelated to any real bug,
+rather than catching new mistakes going forward. The chosen config
+(`disallow_untyped_defs = false`, `check_untyped_defs = true`, `warn_return_any
+= true`, `no_implicit_optional = true`) still catches genuine type errors —
+wrong argument types, missing returns, incompatible overrides — without
+demanding every function already have exhaustive annotations.
+
+**What the first mypy/Ruff pass actually found (34 mypy + 7 Ruff findings, all
+individually triaged rather than blanket-suppressed):** two genuine, if narrow,
+issues fixed directly — a `ContextVar` mutable-default footgun in
+`app.core.logging` (`default={}` shared across every reader that never
+`.set()`s its own value; changed to `default=None` with `or {}` at each read
+site) and a documented `assert` added in `app.services.memory_service` to
+narrow `Optional[str]` to `str` at the one call site where
+`CompactionOutcome.summary_changed=True` provably implies a real summary string,
+by construction in `app.memory.compaction` — the invariant existed before this
+ADR, just wasn't expressed to the type checker. Two genuine unused imports
+removed. One defensive hardening applied on inspection: `zip(...,
+strict=True)` in `app.rag.vector_store`'s Chroma-result unpacking, so a
+(never-observed, but not type-system-impossible) length mismatch between
+Chroma's four parallel result lists fails loudly instead of silently
+truncating. Everything else — `ClassVar`/per-instance-override tension in
+`ResearchMindError.retryable`, SQLAlchemy cross-file forward-reference
+`relationship()` declarations (already flagged with `# noqa: F821` before this
+ADR), and the bulk of the mypy findings (LangGraph's `add_node`/`ainvoke`
+overload imprecision for `TypedDict` state schemas, ChromaDB's
+stricter-or-looser-than-runtime stubs, Starlette's generic
+`add_exception_handler` signature, untyped-`Any`-returning calls into
+`tavily-python`/`ollama`/`sentence-transformers`) — is documented,
+targeted third-party stub friction, suppressed with an explanation of exactly
+why each is not a real defect, rather than either left as unexplained noise or
+"fixed" by reshaping already-tested working code around another library's
+imprecise type stubs.
+
+**Two real, unrelated production bugs found and fixed along the way, discovered
+specifically because verification ran through the real, fully-wired
+application (`app.main.create_app()`, real `TestClient` lifespan) rather than
+an isolated per-file check:** `logger.info(..., extra={"filename": ...})` in
+both `app/api/routes/report.py` (this phase) and `app/rag/extraction.py` (an
+already-approved Phase 3 file) raised `KeyError: Attempt to overwrite
+'filename' in LogRecord` on every real call — Python's stdlib `logging`
+reserves `filename` as one of `LogRecord`'s own attributes, a collision that
+isolated tests using stubbed logging never exercised. Fixed by renaming both
+call sites' `extra` keys (`download_filename`, `document_filename`); grepped
+the rest of the codebase for every other reserved `LogRecord` attribute name
+across every `extra={...}` call site and found no further collisions.
+
+**Alternatives considered:** Deferring all tooling setup to Phase 11
+(Testing)/Phase 12 (final polish) instead of now — rejected because linting and
+type-checking catch a different, cheaper class of issue (unused imports, type
+mismatches, footguns) than the functional tests this project already relies on,
+and running them once now, before eight more phases of code accumulate on top,
+keeps the fix cost low. Full `--strict` mypy adoption immediately — rejected
+per the reasoning above (large unrelated backlog, no proportional bug-catching
+value for this codebase's actual risk profile). Reformatting to Black's default
+88-column width — rejected as unnecessary churn against an already-reviewed,
+intentionally prose-heavy style.
+
+**Tradeoffs accepted:** The mypy config's per-module `disable_error_code`
+overrides mean a *new*, real type error introduced later in one of those eight
+overridden modules in one of the four disabled error-code categories
+(`no-any-return`, `arg-type`, `call-overload`, `index`, `dict-item`) would not
+be caught until those overrides are eventually narrowed or removed — accepted
+because the alternative (leaving them fully strict) would currently be pure
+false-positive noise in those specific modules, and the overrides are scoped to
+exactly the modules and error codes that produced the noise, not applied
+globally.
+
+---
+
+*(This log will continue to grow as Phases 9–12 are implemented — frontend,
+Docker, testing, and the final README will each surface their own decisions.)*
