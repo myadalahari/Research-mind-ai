@@ -1,0 +1,111 @@
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+# 120, not Black's default 88 -- matches this codebase's actual existing
+# style (extensive prose docstrings and descriptive names routinely run
+# past 88/100 columns; see docs/architecture-decisions.md's own
+# tooling-setup entry for the measurement behind this number). Chosen so
+# adopting Black now doesn't force a disruptive full-tree reformat of
+# every already-reviewed file just to fit a narrower default.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["data"]
+
+[tool.ruff.lint]
+# Deliberately conservative for a first adoption pass: real-bug-catching
+# rule families only (unused imports/names, undefined names, bare
+# excepts, common bug patterns) -- not the full opinionated rule set
+# (import sorting, docstring conventions, complexity limits, etc.), which
+# would surface hundreds of stylistic findings across already-reviewed
+# code with no genuine correctness value. Broadening this set is a
+# separate, deliberate future decision, not a default to grow into
+# silently.
+select = ["E", "F", "B", "W"]
+ignore = [
+    "E501",  # line length -- enforced by line-length above / Black, not as a lint error
+    "B008",  # "no function call in argument defaults" -- a real anti-pattern in general,
+             # but Depends(...) in a route signature default is FastAPI's own documented,
+             # idiomatic dependency-injection mechanism (every route in app/api/routes/*
+             # uses it this way), not a bug this rule is meant to catch.
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports are the point of a package __init__
+
+[tool.mypy]
+python_version = "3.11"
+files = ["app"]
+exclude = ["data/"]
+# Deliberately not --strict for this first pass: the codebase was built
+# with runtime-verified behavior (real functional tests per file) as the
+# primary correctness signal, not a mypy-strict discipline from the
+# start. Enabling --strict now would surface a large one-time backlog of
+# pre-existing annotation gaps unrelated to any real bug. This config
+# still catches genuine type errors (wrong argument types, missing
+# returns, incompatible overrides) without demanding every function
+# already have exhaustive annotations.
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Third-party packages in this project's dependency set that ship no
+# type stubs and have no stub package available on PyPI -- silencing
+# only the "no stubs found" class of noise, not real errors within this
+# project's own code.
+module = ["chromadb.*", "tavily.*", "reportlab.*", "sentence_transformers.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# app/database/types.py: SQLAlchemy's own TypeDecorator.process_result_value
+# is typed with an untyped `value: Any` parameter, so every operation on
+# `value` (e.g. `.astimezone(...)`) mypy sees as "returning Any" -- a
+# consequence of SQLAlchemy's own base-class signature, not a bug in this
+# codebase's logic (the actual runtime value is always a real datetime,
+# already covered by real functional tests in Phase 1).
+#
+# app/rag/vector_store.py: ChromaDB's shipped type stubs are stricter (numpy
+# ndarray types for plain float lists) and looser (Optional results that are
+# never actually None once `include=[...]` is set) than its real runtime
+# behavior in the version pinned here (chromadb==1.5.9) -- verified via real
+# functional tests against a real Chroma collection in Phase 5, not
+# hypothetical. Not something to "fix" by reshaping working code around a
+# third-party library's own imprecise stubs.
+#
+# app/agents/graph.py, app/services/chat_service.py: LangGraph's
+# `StateGraph.add_node`/`CompiledStateGraph.ainvoke` overloads are a known,
+# widely-reported friction point for TypedDict-based state schemas (the
+# overload resolution LangGraph ships doesn't cleanly match a plain
+# `TypedDict` state the way this project's `ResearchGraphState` is defined) --
+# not a defect in this project's own node functions, which are directly,
+# repeatedly functionally verified in Phase 6 against the real compiled
+# graph.
+#
+# app/api/middleware/error_handler.py: Starlette's `add_exception_handler`
+# is typed generically as `Callable[[Request, Exception], ...]`; registering
+# a handler typed to a specific `ResearchMindError` subclass (the whole
+# point of this module -- see its own docstring) is Starlette's own
+# documented usage pattern, not a type mismatch at runtime.
+#
+# app/services/search/tavily_search_provider.py, app/services/llm/ollama_llm_service.py,
+# app/rag/embedding_provider.py: the underlying SDKs (tavily-python, ollama,
+# sentence-transformers) return loosely- or un-typed values (e.g. parsed
+# JSON, `Any` from `.json()`/`.encode(...)`) at the exact points this
+# project's own code narrows them to a concrete type immediately afterward
+# -- again a stub-precision gap in the dependency, not this project's logic.
+module = [
+    "app.database.types",
+    "app.rag.vector_store",
+    "app.agents.graph",
+    "app.services.chat_service",
+    "app.api.middleware.error_handler",
+    "app.services.search.tavily_search_provider",
+    "app.services.llm.ollama_llm_service",
+    "app.rag.embedding_provider",
+]
+disable_error_code = ["no-any-return", "arg-type", "call-overload", "index", "dict-item"]

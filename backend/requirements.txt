@@ -1,0 +1,87 @@
+# ResearchMind AI — backend dependencies
+#
+# Runtime application dependencies only. Development tooling (Black, Ruff,
+# mypy) is pinned separately in requirements-dev.txt, so a production
+# install never pulls in tools it has no use for.
+#
+# Pinned to exact versions actually installed and tested against during
+# development (see docs/architecture-decisions.md for the reasoning behind
+# each major dependency choice — Ollama/Qwen3, ChromaDB, Sentence
+# Transformers, Tavily, LangGraph, etc.).
+#
+# Transitive dependencies (torch, transformers, huggingface-hub, and so on)
+# are intentionally NOT pinned here directly — they're resolved by pip from
+# the top-level packages below, which is the correct place to own that
+# resolution.
+#
+# NOTE for Phase 10 (Docker): installing `sentence-transformers` here pulls
+# in PyPI's default `torch` wheel, which bundles CUDA runtime packages
+# (nvidia-cublas, nvidia-cudnn, ...) even though EMBEDDING__DEVICE=cpu is
+# the configured default and this project has no GPU requirement. That's a
+# deliberate, deferred tradeoff (see ADR log) — the Dockerfile should
+# install torch from the CPU-only wheel index
+# (https://download.pytorch.org/whl/cpu) to avoid shipping ~1.5GB of unused
+# CUDA libraries in the production image, rather than solving it here.
+
+# --- Web framework ---
+fastapi==0.141.1
+uvicorn==0.46.0
+python-multipart==0.0.26
+
+# --- Configuration & validation ---
+pydantic==2.13.3
+pydantic-settings==2.14.0
+typing_extensions==4.15.0
+
+# --- Database ---
+sqlalchemy==2.0.51
+aiosqlite==0.22.1
+
+# --- RAG pipeline: document extraction ---
+pypdf==3.17.4
+python-docx==1.2.0
+
+# --- RAG pipeline: embeddings & vector store ---
+sentence-transformers==5.6.1
+chromadb==1.5.9
+
+# --- Multi-agent workflow ---
+# langchain-core arrives as langgraph's own transitive dependency; not
+# pinned separately here, per this file's stated transitive-dependency policy.
+langgraph==1.2.10
+
+# --- LLM backend ---
+# httpx arrives transitively via ollama too, but is pinned explicitly here
+# because OllamaLLMService imports it directly (to catch httpx.TimeoutException) --
+# unlike a purely-transitive dependency, our own source code depends on its API.
+ollama==0.6.2
+httpx==0.28.1
+
+# --- Web search backend ---
+# TavilySearchProvider also imports httpx directly (to catch httpx.ConnectError /
+# httpx.HTTPStatusError), reusing the same pinned version above.
+tavily-python==0.7.27
+
+# --- Report export: PDF rendering ---
+# Backs PDFReportExporter (app.reports.exporters.pdf_exporter). Distinct
+# from pypdf above, which is read-only (used for extracting text from
+# uploaded PDFs during ingestion) and has no document-composition API --
+# ReportLab is this project's only PDF-writing dependency. Built on the
+# Platypus layer (SimpleDocTemplate + flowables), not the low-level
+# canvas API, so the exporter can compose paragraph/table/heading
+# elements directly from a ReportDocument's structure. Pinned to
+# 5.0.0 -- installed and smoke-tested (a real multi-element PDF built
+# via SimpleDocTemplate/Paragraph/Table and confirmed to open with a
+# valid %PDF-1.4 header) against this project's exact toolchain
+# (Python 3.11, pillow 12.2.0, charset-normalizer 3.4.7, both already
+# present from other dependencies and satisfying ReportLab's own
+# pillow>=9.0.0 / charset-normalizer requirements with no conflicts per
+# `pip check`). Declares `Requires-Python: >=3.9,<4` and is classified
+# Development Status :: 5 - Production/Stable. The Platypus/lib.styles/
+# lib.pagesizes APIs this project uses have been stable across the
+# 4.x-to-5.0 boundary; the only user-visible change at 5.0 is that the
+# optional C acceleration extension moved behind a `reportlab[accel]`
+# extra instead of bundling by default, a performance-only concern for
+# the single-document-on-demand PDFs this exporter generates, not a
+# correctness or compatibility one.
+reportlab==5.0.0

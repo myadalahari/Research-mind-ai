@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Environment / secrets
+.env
+
+# Runtime-generated data (ReportSettings.output_dir, VectorStoreSettings.persist_dir,
+# and the local SQLite database all live under here by default -- see
+# Settings.ensure_runtime_directories() and .env.example)
+backend/data/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

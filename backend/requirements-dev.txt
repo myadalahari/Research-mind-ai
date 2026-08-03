@@ -1,0 +1,12 @@
+# ResearchMind AI — development tooling dependencies
+#
+# Separate from requirements.txt (runtime application dependencies) so a
+# production install never pulls in linting/formatting/type-checking
+# tools it has no use for. Pinned to the exact versions installed and
+# verified against this codebase (see pyproject.toml's [tool.black]/
+# [tool.ruff]/[tool.mypy] configuration for the reasoning behind each
+# tool's settings).
+
+black==26.5.1
+ruff==0.16.1
+mypy==2.3.0
