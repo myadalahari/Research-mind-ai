@@ -1,0 +1,57 @@
+[tool.black]
+line-length = 120
+target-version = ["py311"]
+# Same line-length as backend/pyproject.toml, for the same reason: this
+# frontend's own style (descriptive names, prose docstrings) routinely runs
+# past Black's default 88/100 columns -- see docs/architecture-decisions.md's
+# Phase 9 stabilization entry.
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+# Same deliberately conservative selection as the backend's first adoption
+# pass, for the same reason: real-bug-catching rule families only.
+select = ["E", "F", "B", "W"]
+ignore = [
+    "E501",  # line length -- enforced by line-length above / Black, not as a lint error
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # re-exports are the point of a package __init__
+
+[tool.mypy]
+python_version = "3.11"
+files = ["."]
+exclude = ["pages/__init__.py"]
+# Not --strict, for the same reason as the backend: this codebase's primary
+# correctness signal has been real functional tests (AppTest against a real
+# running backend) per file, not a mypy-strict discipline from the start.
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+no_implicit_optional = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# streamlit ships its own inline type hints for most of the public API used
+# here, but streamlit.testing.v1 (test-only, not imported by any production
+# module) and a few dynamic accessors (st.session_state's __getattr__-based
+# proxy) are not fully precise -- silencing only "no stubs"/"Any" noise from
+# the streamlit package itself, not real errors in this project's own code.
+module = ["streamlit.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# core/api_client.py's _parse_data(response, model: Type[ModelT]) subscripts
+# DataEnvelope[model] using `model` as a runtime *value* (ChatResponse or
+# ReportGenerationResponse, chosen by the caller) rather than a name mypy can
+# resolve statically -- a well-known mypy limitation with dynamically
+# parametrized Generics, not a defect in this project's own logic. Pydantic
+# v2 fully supports this at runtime; the send_chat_message/generate_report
+# real end-to-end tests (against a genuinely running backend, not mocks)
+# exercise this exact call and its resulting validation on every run.
+module = ["core.api_client"]
+disable_error_code = ["valid-type"]

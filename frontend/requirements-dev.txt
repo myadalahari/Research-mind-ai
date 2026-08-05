@@ -1,0 +1,15 @@
+# ResearchMind AI — frontend development tooling dependencies
+#
+# Separate from requirements.txt for the same reason as the backend's own
+# requirements-dev.txt: a production install of the frontend never pulls in
+# linting/formatting/type-checking tools it has no use for. Pinned to the
+# exact versions installed and verified against this codebase -- the same
+# versions already used for the backend, so both halves of the project are
+# checked by one consistent toolchain rather than two independently-drifting
+# ones.
+
+black==26.5.1
+ruff==0.16.1
+mypy==2.3.0
+types-requests==2.33.0.20260712
+pandas-stubs==3.0.5.260730

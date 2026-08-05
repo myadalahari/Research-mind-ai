@@ -1,0 +1,41 @@
+# ResearchMind AI — frontend dependencies
+#
+# Deliberately minimal and independent of backend/requirements.txt: this
+# frontend talks to the backend purely over HTTP (see
+# docs/architecture-decisions.md's Phase 9 entry), so it has no shared
+# Python dependency surface with the backend beyond both happening to use
+# Pydantic for their own, separately-defined models.
+#
+# Pinned to the exact versions installed and tested against during
+# development, verified for compatibility with each other via `pip check`
+# (no conflicts) rather than assumed.
+
+# --- UI framework ---
+# Streamlit 1.61.0 -- current stable at the time of this build, smoke-tested
+# via streamlit.testing.v1.AppTest against every page in this frontend (not
+# just imported). Declares Requires-Python >=3.9 and does not depend on
+# Pydantic itself, so there is no version coupling to the pydantic pin below
+# to reconcile -- confirmed via `pip check` producing zero conflicts across
+# this file's full dependency set.
+streamlit==1.61.0
+
+# --- HTTP client ---
+# requests, not httpx: core.api_client.py's own docstring explains why --
+# Streamlit reruns synchronously top-to-bottom on every interaction, so
+# there is no event loop to justify an async-capable client. requests is
+# already Streamlit's own transitive dependency (see streamlit's own
+# requires: "requests<3,>=2.27") pinned here explicitly because
+# api_client.py imports it directly (catches requests.exceptions.Timeout /
+# ConnectionError / RequestException by name) -- our own source code
+# depends on its API, not just a transitive presence.
+requests==2.33.1
+
+# --- Request/response validation ---
+# Same pinned versions already used and tested on the backend
+# (backend/requirements.txt) -- core/models.py and core/config.py depend on
+# these APIs directly (BaseModel, Generic[T] parametrization,
+# pydantic-settings' BaseSettings/SettingsConfigDict), and matching the
+# backend's already-verified pins avoids introducing a second, untested
+# combination of Pydantic versions into the project.
+pydantic==2.13.3
+pydantic-settings==2.14.0

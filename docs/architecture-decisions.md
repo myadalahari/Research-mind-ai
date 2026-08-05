@@ -1357,5 +1357,186 @@ globally.
 
 ---
 
-*(This log will continue to grow as Phases 9–12 are implemented — frontend,
-Docker, testing, and the final README will each surface their own decisions.)*
+## ADR-033: Phase 9 frontend architecture — independent contract models, a single HTTP boundary, centralized session-state, and a two-step download flow
+
+**Context.** Phase 9 added the Streamlit frontend (`frontend/`): `app.py` (Chat),
+`pages/1_Report.py` (Report), `core/{config,models,api_client}.py`,
+`state/session.py`, and `ui/{chat_view,report_view,common}.py`. This entry
+records the decisions that shape that whole layer, made incrementally across
+the phase's file-by-file review process rather than as one upfront design.
+
+**Decision 1 — the frontend owns its own wire-contract models; it does not
+import `app.schemas.*`.** `core/models.py` defines its own `ChatRequest`/
+`ChatResponse`/`ReportGenerationRequest`/`ReportGenerationResponse`/etc.,
+independent Pydantic classes that happen to describe the same JSON shapes the
+backend's schemas describe, deliberately not the same Python classes. This
+mirrors the cross-layer enum duplication already established in Phase 3–8
+(`ReportExportFormat` existing independently in `core.config`/`models.enums`/
+`schemas.report`) applied at the boundary between two separately deployable
+services rather than between two layers of one service: a frontend importing
+`app.schemas` would require the backend package to be installed and
+importable just to run the UI, defeating independent deployability (relevant
+now that Phase 10 will put backend and frontend in separate Docker images).
+Two consequences worth naming explicitly: the frontend's models mirror only
+the fields each page actually consumes (e.g. `Citation` omits
+`document_id`, `RetrievalOptions` omits `document_ids`/`session_scope` —
+both tied to document upload, out of this phase's scope per the Phase 9
+scoping discussion below), and the backend's *two* different citation shapes
+on the wire (`schemas.common.Citation` for `/chat`, the narrower
+`core.interfaces.report_exporter.Citation` embedded in `ReportDocument` for
+`/report`) got two distinct frontend models (`Citation`, `ReportCitation`)
+rather than one loosened one, so each stays an accurate description of what
+that specific endpoint actually sends.
+
+**Decision 2 — `core/api_client.py` is the only place that performs HTTP
+requests, parses response bodies, or handles `requests` exceptions.** Every
+UI component and page calls a function here and only ever receives an
+already-validated `core.models` instance or an `APIError`. Three
+`APIError` subclasses distinguish *why* a call failed:
+`APIConnectionError` (transport-level — connection refused, timeout; always
+`retryable=True`), `APIResponseError` (the backend responded with a non-2xx
+status and a well-formed `ErrorEnvelope` — every failure path in the
+backend's `error_handler.py`, including FastAPI's own validation errors,
+funnels through that one envelope shape, so this is the only error-parsing
+path this client needs), and `APIValidationError` (a 2xx response whose body
+didn't match the expected contract — a signal that the backend's contract
+has drifted from what this frontend was built against, not a "request
+failed" case). Every successful response is validated through a generic
+`DataEnvelope[T]` wrapper before any UI code touches it, so a malformed or
+unexpectedly-shaped payload fails fast as a clear validation error rather
+than surfacing later as an `AttributeError` deep inside a rendering
+function.
+
+**Decision 3 — `state/session.py` is the only module that touches
+`st.session_state` directly.** Three independent state groups (active chat
+session, last generated report, UI preferences), each with its own clear
+function so resetting one never side-effects another. Every getter lazily
+initializes its own key on first access rather than requiring an
+`init_session_state()` call to have already run — necessary because
+Streamlit's multipage model lets a user land directly on
+`pages/1_Report.py` via URL without `app.py` ever executing in that
+session. `get_retrieval_options()` was originally private to `app.py` and
+moved here once `pages/1_Report.py` needed the identical packaging logic —
+the same "implement twice, extract on the second real need" rule already
+used for `app.reports.naming` in Phase 8.
+
+**Decision 4 — `ui/common.py` exists for the same extraction reason, kept
+deliberately minimal.** `render_api_error()` was first written directly
+inside `app.py` (the "don't extract with only one consumer" call made
+explicitly at the time); once `pages/1_Report.py` needed identical
+rendering, it moved to this new, single-function module rather than either
+duplicating it or growing a speculative general-purpose `ui/utils.py`.
+
+**Decision 5 — presentational components report user interaction back via
+return values, never by acting on it themselves.** `chat_view.
+render_conversation()` returns the text of a clicked follow-up suggestion;
+`report_view.render_report()` returns whether "Prepare download" was just
+clicked. Neither function makes an HTTP call or touches session state — the
+owning page (`app.py`/`1_Report.py`) is what acts on the signal. This is the
+same pattern `st.chat_input` itself uses (return the value, let the caller
+decide), applied consistently to every piece of interactive UI this project
+added on top of Streamlit's own widgets.
+
+**Decision 6 — report downloads are a genuine two-step flow, not a
+simplification.** `st.download_button` requires file bytes to already be
+present before it's drawn; there is no "click triggers a fetch" version of
+it. So downloading a report is necessarily two separate user-visible
+actions: a plain button that, only when clicked, fetches the file via
+`api_client.download_report()` and caches the result in
+`state.session` (never fetched automatically on report generation), followed
+by the real `download_button` once those bytes exist. `filename`/`mime_type`
+are parsed from the response's `Content-Disposition`/`Content-Type` headers
+rather than reconstructed on the frontend, so the backend's existing
+`FileResponse(..., filename=download.filename)` contract stays the single
+source of truth for both.
+
+**Decision 7 — Phase 9 scope excludes `/upload`, `/history`, and a
+health-check route.** The backend survey at the start of this phase found
+`app/schemas/upload.py` fully designed with no `UploadService`/route at
+all, and `HistoryService`/`HealthService` both fully implemented and already
+wired into `core/dependencies.py` (`get_history_service`/`get_health_service`)
+with no route file for either — a real, asymmetric gap (`/upload` needs a
+new service designed from scratch; `/history`/`/health` need only a thin
+route file each). Presented to the user as an explicit scoping choice;
+"Chat + Report only" was chosen, deferring all three. This frontend was
+therefore built against exactly `/chat` and `/report` as they exist today,
+with no speculative UI for document upload, session history browsing, or a
+health dashboard gated on backend routes that don't exist yet.
+
+**Stabilization pass (this entry's own trigger).** `frontend/pyproject.toml`
+added, mirroring the backend's Black/Ruff/mypy configuration exactly
+(`line-length=120`, the same conservative Ruff `select`, non-strict mypy) —
+same versions (`black==26.5.1`, `ruff==0.16.1`, `mypy==2.3.0`) pinned in a new
+`frontend/requirements-dev.txt`, so both halves of the project are checked by
+one consistent toolchain. First pass found:
+
+- **One real structural bug:** `frontend/__init__.py`, created during initial
+  scaffolding, was dead weight nothing ever imported (confirmed via a
+  repository-wide grep — every internal import is the bare `core.`/`state.`/
+  `ui.` form, exactly matching `frontend/`'s actual role as the `streamlit
+  run` entry directory, the same way `backend/` has no top-level
+  `__init__.py` above `app/`). It also actively broke mypy ("Source file
+  found twice under different module names") by making mypy's directory walk
+  treat the same files as both `core.config` and `frontend.core.config`.
+  Removed.
+- **One real defensive-hardening finding**, the same category as Phase 8's
+  `vector_store.py` fix: `zip(columns, suggestions)` in
+  `chat_view._render_follow_up_suggestions` changed to `zip(..., strict=True)`
+  — the two are always the same length by construction (`columns` is built as
+  exactly `len(suggestions)` columns), so this documents that invariant and
+  fails loudly rather than silently truncating if it's ever violated later.
+- **Two genuine missing-stub gaps**, both resolved by installing the real stub
+  packages (`types-requests`, `pandas-stubs`) rather than suppressing —
+  preferred over `ignore_missing_imports` wherever an accurate stub actually
+  exists, the same preference already stated in the backend's own mypy
+  overrides.
+- **One genuine mypy-vs-runtime-generics limitation**, suppressed narrowly and
+  documented rather than worked around: `core/api_client.py`'s
+  `_parse_data(response, model: Type[ModelT])` subscripts
+  `DataEnvelope[model]` using `model` as a runtime value (the caller passes
+  either `ChatResponse` or `ReportGenerationResponse`), which mypy cannot
+  statically resolve — Pydantic v2 fully supports this at runtime, exercised
+  by every real end-to-end test in this phase against a genuinely running
+  backend.
+- Two files (`app.py`, `core/api_client.py`) needed Black's `line-length=120`
+  reformat, applied directly (purely mechanical) and re-verified via the full
+  real end-to-end regression suite afterward, the same "apply then verify via
+  real functional tests, don't just trust the formatter" approach used in
+  Phase 8.
+
+**Test suite decision, matching the existing project plan.** No permanent
+pytest-based suite was added for the frontend in this phase, mirroring the
+Phase 8 stabilization decision to defer the backend's own permanent suite to
+Phase 11 — this ADR log's own closing line already named Phase 11 as
+"testing" for exactly this reason, and building one test infrastructure
+half now and the other half later would fragment that decision rather than
+honor it. Every file in this phase was still verified with real, non-mocked
+functional tests as it was built (`streamlit.testing.v1.AppTest` driving
+real widget interactions against a genuinely running `uvicorn` instance of
+the backend, with only the LLM-dependent `ChatService`/`ReportService`
+substituted via FastAPI's `dependency_overrides` and duck-typed fakes,
+never a mocking framework) — those test scripts simply aren't yet persisted
+as a committed suite, the same situation the backend was already in at the
+end of Phase 8.
+
+**Alternatives considered.** Sharing one Pydantic model set between backend
+and frontend via a shared internal package — rejected for the independent-
+deployability reasoning in Decision 1. Auto-fetching a report's download
+bytes as soon as generation completes — rejected because it would fetch
+data the user hasn't asked for yet and hold it in `st.session_state`
+indefinitely; the explicit two-step flow in Decision 6 was chosen instead.
+Building `/upload`/`/history`/`/health` routes now, ahead of the frontend
+that would use them — rejected in favor of the narrower "Chat + Report
+only" scope explicitly chosen in Decision 7.
+
+**Tradeoffs accepted.** The frontend's models will need manual updates
+whenever the backend's corresponding schema changes, rather than picking up
+the change automatically via a shared import — accepted as the direct cost
+of Decision 1's independent-deployability benefit; `APIValidationError`
+exists specifically so that drift fails loudly and immediately rather than
+silently.
+
+---
+
+*(This log will continue to grow as Phases 10–12 are implemented — Docker,
+testing, and the final README will each surface their own decisions.)*
