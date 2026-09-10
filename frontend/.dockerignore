@@ -1,0 +1,31 @@
+# ResearchMind AI — frontend build context exclusions
+
+# Version control
+.git
+.gitignore
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Dev tooling (installed separately via requirements-dev.txt, never inside
+# the production image)
+requirements-dev.txt
+pyproject.toml
+
+# Environment files
+.env
+.env.*
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store

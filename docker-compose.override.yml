@@ -1,0 +1,41 @@
+# ResearchMind AI — development overrides, auto-merged onto docker-compose.yml
+#
+# `docker compose up` merges this file with docker-compose.yml automatically
+# whenever both are present in the same directory (Compose's default
+# override-file discovery, not a project-specific flag) -- this file only
+# needs to state what's *different* for local development; everything else
+# is inherited from the base file unchanged.
+#
+# To run the production-like baseline without these dev conveniences:
+#   docker compose -f docker-compose.yml up
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - APP__DEBUG=true
+      - LOGGING__FORMAT=console
+    volumes:
+      # Live-reload source bind-mount, layered on top of (not replacing)
+      # the base file's backend_data named volume -- Compose merges the
+      # volumes list, so /app/data still resolves to the named volume
+      # while /app/app additionally gets the live host source.
+      - ./backend/app:/app/app
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    volumes:
+      - ./frontend/app.py:/app/app.py
+      - ./frontend/core:/app/core
+      - ./frontend/state:/app/state
+      - ./frontend/ui:/app/ui
+      - ./frontend/pages:/app/pages
+    # Streamlit watches the filesystem and reruns on save by default
+    # (server.runOnSave is not disabled anywhere in this project's config),
+    # so no extra --server flag is needed here for live reload to work
+    # against the bind-mounted source above.

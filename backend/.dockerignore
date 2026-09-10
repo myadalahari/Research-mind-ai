@@ -1,0 +1,42 @@
+# ResearchMind AI — backend build context exclusions
+#
+# Keeps the Docker build context (and therefore the image) free of anything
+# that isn't the application source: local runtime data (recreated fresh
+# inside the container via the unified /app/data volume, Decision D),
+# dev-only tooling config, caches, and version control metadata.
+
+# Version control
+.git
+.gitignore
+
+# Local runtime data — the container gets its own via the backend_data volume
+data/
+reports/
+
+# Python bytecode / caches
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Dev tooling (installed separately via requirements-dev.txt, never inside
+# the production image)
+requirements-dev.txt
+pyproject.toml
+
+# Environment files — real secrets belong in docker-compose's env_file, not
+# baked into an image layer
+.env
+.env.*
+!.env.example
+
+# Editor/OS cruft
+.vscode/
+.idea/
+.DS_Store

@@ -1538,5 +1538,142 @@ silently.
 
 ---
 
-*(This log will continue to grow as Phases 10–12 are implemented — Docker,
-testing, and the final README will each surface their own decisions.)*
+## ADR-034: Phase 10 — Docker & deployment architecture
+
+**Context.** ResearchMind AI needed a way to run its three independently-
+deployable pieces (Ollama, the FastAPI backend, the Streamlit frontend) as a
+single reproducible stack, without compromising the independent-
+deployability principle already established across Phases 8–9 (no shared
+imports between backend and frontend; each has its own dependency set,
+tooling config, and now its own Docker image and build context).
+
+**Decisions approved by the user before implementation** (four flagged
+questions, presented as a survey covering Docker strategy, Ollama
+integration, ChromaDB/SQLite persistence, environment variables, CPU-only
+PyTorch, and prod-vs-dev compose configuration):
+
+1. **Ollama integration: manual `ollama pull qwen3` step**, documented in
+   `docs/docker-deployment.md`, rather than a custom Ollama image that bakes
+   the model in. The official `ollama/ollama` image is used unmodified; the
+   model persists in the named `ollama_data` volume across restarts. Simpler
+   and more standard than a bespoke image, at the cost of one manual step
+   after first `docker compose up`.
+2. **Embedding model baked into the backend image at build time.**
+   `backend/Dockerfile` runs `SentenceTransformer('all-MiniLM-L6-v2')` once
+   during the build (its own `RUN python -c ...` layer), caching the model
+   inside the image. Chosen over a runtime-download-into-a-volume approach
+   for deterministic, network-independent container startup — the tradeoff
+   is that *building* the image requires outbound access to
+   `huggingface.co` (see Verification limitations below), while *running*
+   the built container never does.
+3. **`GET /health` implemented now** (this phase's first file), thin and
+   following the exact pattern already established by `chat.py`/`report.py`
+   — no new architectural pattern introduced, just the previously-deferred
+   route finally built. Readiness is reflected via HTTP status code (503
+   when `ready=false`) using FastAPI's `Response` injection pattern, so
+   Docker's `HEALTHCHECK` (`curl -f`) can act on the status code alone.
+4. **One unified `/app/data` volume** (`backend_data`) rather than four
+   separate named volumes for SQLite/Chroma/reports/cache. `REPORT__OUTPUT_DIR`,
+   `VECTOR_STORE__PERSIST_DIR`, `DATABASE__URL`, and `CACHE__DIR` are
+   reconfigured entirely via `docker-compose.yml`'s `environment:` block —
+   no application code changed, since every one of those paths was already
+   a `Settings` field and `ensure_runtime_directories()` already creates
+   whatever directories those settings point to. Verified directly (not
+   just by inspection): a real `Settings()` instantiation with these exact
+   env vars set, followed by a real `ensure_runtime_directories()` call,
+   confirmed all four directories are created correctly and the four-slash
+   absolute-path SQLite URL (`sqlite+aiosqlite:////app/data/researchmind.db`)
+   is preserved intact.
+
+**Additional decisions made inline** (small/low-risk, per the relaxed
+per-file cadence the user explicitly granted for this phase):
+
+- `/health` mounted under `settings.app.api_prefix` (final path
+  `/api/v1/health`), for consistency with `chat`/`report`, rather than a
+  bare root `/health`.
+- Single-stage Docker builds for both images, not multi-stage. Neither
+  image has a compiled-extension build step of its own that would benefit
+  from a separate builder stage — the "build" work in both is `pip install`
+  against already-prebuilt wheels, so a second stage would add complexity
+  without shrinking the final image.
+- `python:3.11-slim` (glibc), not an Alpine base, for both images.
+  `sentence-transformers`/`torch`/`chromadb` ship manylinux (glibc) wheels;
+  Alpine would force building several from source, trading a marginally
+  smaller image for a slower, less-tested build. Matches the interpreter
+  already pinned in both `pyproject.toml`s (`target-version = ["py311"]`).
+- CPU-only PyTorch installed explicitly, before `requirements.txt`, from
+  `https://download.pytorch.org/whl/cpu` — documented in
+  `backend/requirements.txt`'s own header comment since Phase 9's frontend
+  work; this phase is where that documented plan was finally executed.
+- Non-root users in both images (`researchmind` system user), least-
+  privilege by default rather than running the process as root.
+- Frontend reuses Streamlit's own built-in `/_stcore/health` liveness
+  endpoint for its container `HEALTHCHECK` rather than building a bespoke
+  one — the frontend's one real external dependency (the backend API) is
+  already monitored by the backend's own `/health`, not duplicated here.
+
+**Verification.**
+
+- `GET /api/v1/health` verified with real functional tests: a genuine
+  `uvicorn` server running the actual `app.main.app`, with
+  `dependency_overrides` substituting duck-typed fake `HealthService`
+  instances (never a mocking framework) for the ready-and-200 and
+  not-ready-and-503 cases — both passed, including the full
+  `DataResponse[HealthCheckResponse]` envelope shape. A third case drove
+  the *real*, non-overridden `get_health_service()` DI chain end-to-end;
+  see the limitation noted below.
+- `docker compose config` was run for real against both compose files
+  together, confirming the override file merges correctly (env vars,
+  volumes, and the `--reload`/bind-mount dev overrides all appear exactly
+  as intended in the resolved config) and that the four-slash SQLite URL
+  and unified-volume environment variables resolve without error.
+
+**Verification limitation, disclosed rather than worked around.** This
+development sandbox's outbound network allowlist permits `pypi.org` (every
+`pip install` throughout this project has worked normally) but blocks both
+`huggingface.co` and Docker Hub's registry (`registry-1.docker.io`) —
+confirmed directly via `curl` (`403 Forbidden` from the sandbox's proxy in
+both cases) and via a real `docker pull python:3.11-slim` attempt, which
+failed with the same `403`. As a direct consequence:
+  - The `/health` route's Case 3 (real, non-overridden DI chain) could not
+    complete, because the real `get_embedding_provider()` dependency
+    eagerly downloads the embedding model at construction time and hit the
+    same block — this is the exact runtime-network dependency that
+    Decision 2 (bake the model in at build time) exists to eliminate
+    *inside a real built container*, and does not affect the route logic
+    itself, which Cases 1 and 2 already verify fully.
+  - Neither `backend/Dockerfile` nor `frontend/Dockerfile` could actually
+    be built in this sandbox (both fail immediately at `FROM
+    python:3.11-slim`, before any project-specific instruction runs), and
+    `docker compose up` could not be run end-to-end here.
+  - What *was* verified directly: `docker compose config`'s successful
+    merge/resolution of both YAML files (a real parse, not a manual
+    read-through), and a standalone `Settings()` + `ensure_runtime_directories()`
+    run with the exact environment variables `docker-compose.yml` sets,
+    confirming the unified-volume configuration is correct independent of
+    whether it runs inside a container.
+  - This is a sandbox tooling limitation, not a defect in any Dockerfile or
+    compose file — the same class of issue as the `/health` test's Case 3.
+    The Dockerfiles and compose files should be built and run on a machine
+    with normal outbound internet access (any standard developer machine
+    or CI runner); this ADR entry exists so that gap is explicit rather
+    than silently assumed to have been tested.
+
+**Alternatives considered.** A custom Ollama image with the model baked in
+— rejected in favor of the simpler, more standard "official image + one
+documented pull" approach (Decision 1). Four separate named volumes instead
+of one unified `/app/data` — rejected for this project's scale; accepted
+tradeoff is losing the ability to wipe one subsystem's data independently
+without wiping all of it.
+
+**Tradeoffs accepted.** Building `backend/Dockerfile` requires outbound
+access to `huggingface.co` at build time (not at container runtime) —
+accepted as the cost of Decision 2's deterministic, network-independent
+container startup. The manual `ollama pull` step means the stack is not
+fully self-starting on a completely fresh `ollama_data` volume until that
+command is run once — accepted as the cost of Decision 1's simplicity.
+
+---
+
+*(This log will continue to grow as Phases 11–12 are implemented — testing
+and the final README will each surface their own decisions.)*

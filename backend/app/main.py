@@ -36,15 +36,16 @@ that only reaches call sites resolving the name through
 is overridden by FastAPI's ``dependency_overrides``, which substitutes by
 object identity, not by re-resolving a module attribute.
 
-``chat_router`` and ``report_router`` are wired below -- the two routers
-that exist so far. ``app/api/routes``'s own docstring already establishes
-the pattern (``app.include_router(...)``) for whatever routers come next;
-no speculative wiring for endpoints that don't exist yet (e.g. a health
-route -- ``HealthService`` exists but has no route file, deliberately left
-for its own, separate step). ``report_router`` was mounted as its own
-plumbing step after ``app/api/routes/report.py`` was built and tested in
-isolation, the same sequencing ``chat_router`` went through -- this file
-never grows a new router until there's a working, tested one to add.
+``chat_router``, ``report_router``, and ``health_router`` are wired below.
+``app/api/routes``'s own docstring already establishes the pattern
+(``app.include_router(...)``) for whatever routers come next. ``health_router``
+was added in Phase 10, specifically to give Docker's container healthcheck
+something more meaningful than bare process liveness to check -- ``upload``
+and ``history`` remain unbuilt (see the Phase 9 scoping discussion), still
+deliberately left for their own, separate steps. Every router here was
+mounted as its own plumbing step only after its route file was built and
+tested in isolation -- this file never grows a new router until there's a
+working, tested one to add.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.middleware.error_handler import register_exception_handlers
 from app.api.routes.chat import router as chat_router
+from app.api.routes.health import router as health_router
 from app.api.routes.report import router as report_router
 from app.core import dependencies
 from app.core.logging import get_logger, setup_logging
@@ -124,6 +126,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chat_router, prefix=settings.app.api_prefix)
     app.include_router(report_router, prefix=settings.app.api_prefix)
+    app.include_router(health_router, prefix=settings.app.api_prefix)
 
     return app
 

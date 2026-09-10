@@ -1,0 +1,90 @@
+# ResearchMind AI — production-safe baseline Docker Compose configuration.
+#
+# Base/override convention (see docs/architecture-decisions.md's Phase 10
+# ADR): this file alone is what a production-like deployment runs --
+# built images, named volumes, `restart: unless-stopped`, no source
+# bind-mounts. `docker-compose.override.yml` sits alongside it and is
+# auto-merged by `docker compose` whenever both files are present in the
+# same directory (Compose's own default override-file convention, not a
+# project-specific mechanism), layering on dev-only conveniences without
+# this file ever needing to know about them.
+#
+# Three services, matching the three independently-deployable pieces this
+# project already has: Ollama (self-hosted LLM runtime, Decision A), the
+# FastAPI backend, and the Streamlit frontend.
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: researchmind-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      # Exposed on the host too (not just the internal network) so the
+      # one-time `ollama pull qwen3` step (Decision A -- see
+      # docs/docker-deployment.md) can be run from the host via
+      # `docker exec`, and so the model can be verified/managed directly
+      # with the `ollama` CLI if installed on the host.
+      - "11434:11434"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: researchmind-backend:latest
+    container_name: researchmind-backend
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    env_file:
+      # The one real secret in this system (SEARCH__TAVILY_API_KEY, only
+      # required if FEATURES__ENABLE_WEB_SEARCH=true) and every other
+      # backend setting live here, never baked into the image or committed
+      # to this file -- copy .env.example to .env and fill in REQUIRED
+      # values before running.
+      - .env
+    environment:
+      # Overrides of .env.example's local-dev defaults that only make sense
+      # inside the compose network -- kept here rather than in .env so the
+      # container-networking wiring stays visible in the file that defines
+      # the network, not buried in a gitignored env file.
+      - LLM__OLLAMA__BASE_URL=http://ollama:11434
+      # Decision D: one unified /app/data volume. REPORT__OUTPUT_DIR is
+      # reconfigured to live under it purely via this env var -- no code
+      # change, since ReportService already reads this setting rather than
+      # a hardcoded path (see app/services/report_service.py).
+      - REPORT__OUTPUT_DIR=/app/data/reports
+      - VECTOR_STORE__PERSIST_DIR=/app/data/chroma
+      - DATABASE__URL=sqlite+aiosqlite:////app/data/researchmind.db
+      - CACHE__DIR=/app/data/cache
+    volumes:
+      # Decision D: SQLite, Chroma, generated reports, and the optional
+      # cache all live under one named volume rather than four separate
+      # ones -- simpler to back up/inspect/reset as a single unit for a
+      # project at this scale, at the cost of not being able to wipe just
+      # one subsystem's data independently (accepted tradeoff, see ADR log).
+      - backend_data:/app/data
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: researchmind-frontend:latest
+    container_name: researchmind-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    environment:
+      # The backend's in-network service name, not localhost -- Compose's
+      # embedded DNS resolves "backend" to the backend container's address
+      # on the shared default network this file implicitly creates.
+      - RESEARCHMIND_API_BASE_URL=http://backend:8000/api/v1
+    ports:
+      - "8501:8501"
+
+volumes:
+  ollama_data:
+  backend_data:
